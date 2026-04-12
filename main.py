@@ -7,14 +7,19 @@ import google.generativeai as genai
 app = Flask(__name__)
 
 # 1. Setup Gemini (Pulling from Environment Variables)
+# Force use of the stable model path to avoid the v1beta error
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('models/gemini-1.5-flash')
 
 def analyze_lead(url):
     try:
         # Advanced Data Retrieval
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            return f"Error: Could not access website (Status Code: {response.status_code})"
+            
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Clean text for Gemini
@@ -31,14 +36,23 @@ def analyze_lead(url):
             "3. A Lead Score from 1-10 based on automation potential."
         )
         
+        # Call Gemini with explicit path logic
         ai_response = model.generate_content(prompt)
+        
+        if not ai_response.text:
+            return "Sentinel Error: AI returned empty response."
+            
         return ai_response.text
+        
     except Exception as e:
         return f"Sentinel Data Retrieval Error: {str(e)}"
 
 @app.route('/webhook', methods=['POST'])
 def handle_lead():
     data = request.json
+    if not data:
+        return jsonify({"error": "No JSON data received"}), 400
+        
     website_url = data.get("website")
     
     if not website_url:
@@ -61,6 +75,7 @@ def send_to_airtable(url, analysis):
     table_name = os.environ.get("TABLE_NAME")
     at_token = os.environ.get("AIRTABLE_TOKEN")
     
+    # Support for either Table Name or Table ID
     at_url = f"https://api.airtable.com/v0/{base_id}/{table_name}"
     headers = {"Authorization": f"Bearer {at_token}", "Content-Type": "application/json"}
     
