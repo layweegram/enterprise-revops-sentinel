@@ -6,14 +6,14 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# 1. Setup Gemini 2.5 (Current 2026 Stable Standard)
+# 1. Setup Gemini (2026 Stable Standard)
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-# Using the stable 2.5 version to avoid legacy 404 errors
+# Using gemini-2.5-flash which is the stable target for April 2026
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 def analyze_lead(url):
     try:
-        # High-Authority Headers to bypass 2026 bot detection
+        # High-Authority Headers for 2026 Web Scraping
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -23,20 +23,20 @@ def analyze_lead(url):
         response = session.get(url, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            return f"Access Denied: Status {response.status_code}. Site may be blocked."
+            return f"Access Denied: Status {response.status_code}"
             
         soup = BeautifulSoup(response.text, 'html.parser')
         for s in soup(["script", "style", "nav", "footer"]):
             s.decompose()
             
-        text = soup.get_text(separator=' ').strip()[:8000] # 2026 models handle more context
+        text = soup.get_text(separator=' ').strip()[:8000]
 
-        # The "Architect" Prompt
+        # Architect Logic
         prompt = (
-            f"Business Audit for: {url}\n\nContent:\n{text}\n\n"
-            "Analyze as an AI Systems Architect:\n"
+            f"Act as an AI Systems Architect. Analyze this data from {url}:\n\n{text}\n\n"
+            "Provide:\n"
             "1. Core Business Model\n"
-            "2. Three high-value AI automation targets\n"
+            "2. Three high-value AI automation targets to recover revenue\n"
             "3. Scaling Score (1-10)"
         )
         
@@ -54,13 +54,10 @@ def handle_lead():
     if not website:
         return jsonify({"error": "No website URL provided"}), 400
 
-    # 1. Run Analysis
-    result = analyze_lead(website)
+    analysis = analyze_lead(website)
+    sync = send_to_airtable(website, analysis)
     
-    # 2. Push to Airtable
-    sync = send_to_airtable(website, result)
-    
-    return jsonify({"status": "Success", "analysis": result, "airtable": sync}), 200
+    return jsonify({"status": "Success", "analysis": analysis, "airtable": sync}), 200
 
 def send_to_airtable(url, analysis):
     base_id = os.environ.get("BASE_ID")
@@ -74,7 +71,7 @@ def send_to_airtable(url, analysis):
         "fields": {
             "Website URL": url,
             "Sentinel Analysis": analysis,
-            "Status": "Success"
+            "Status": "Processed"
         }
     }
     r = requests.post(at_url, headers=headers, json=payload)
