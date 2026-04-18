@@ -7,57 +7,51 @@ import json
 
 app = Flask(__name__)
 
-# 1. Setup Gemini 3.1 (Stable April 2026 Version)
-# System instructions are hard-coded to ensure 'Thinking' mode behavior
+# 1. ARCHITECT CONFIG: Stable 2026 Engine
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 model = genai.GenerativeModel(
-    model_name='gemini-3.1-flash',
+    model_name='gemini-2.5-flash', # Stable April 2026 Target
     system_instruction=(
-        "You are an Elite AI Systems Architect. Your task is to perform a deep business audit. "
-        "Do not provide generic advice. Look for specific revenue recovery opportunities "
-        "and operational gaps. You must return your findings in strict JSON format."
+        "You are the Sentinel Systems Architect. Perform deep-dive revenue audits. "
+        "Analyze the scraped data for operational gaps and AI scaling opportunities. "
+        "You MUST return a valid JSON object. No prose. No conversational filler."
     )
 )
 
 def analyze_lead(url):
     try:
-        # 2. Human-Mimicry Headers to bypass Cloudflare/Security
+        # 2. Bypassing "The Wall" (Cloudflare/Bot protection)
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Upgrade-Insecure-Requests': '1'
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.google.com/'
         }
         
-        # Increased timeout for deep scraping
         session = requests.Session()
         response = session.get(url, headers=headers, timeout=25)
         
         if response.status_code != 200:
-            return {"error": f"Access Denied (Status {response.status_code}). Site might be protected by Cloudflare."}
+            return {"error": f"Scrape Failed: HTTP {response.status_code}"}
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Clean the data (Removes 'noise' so AI can focus on 'value')
+        # Removing noise to maximize Gemini's context window
         for s in soup(["script", "style", "nav", "footer", "header", "aside"]):
             s.decompose()
-            
         text = soup.get_text(separator=' ').strip()[:12000]
 
-        # 3. The "No Mediocrity" Prompt
+        # 3. Professional Extraction Logic
         prompt = (
-            f"DEEP RESEARCH TASK for {url}:\n\n"
-            f"SCRAPED DATA: {text}\n\n"
-            "Analyze the data above. You must return a JSON object with these exact keys:\n"
-            "1. 'company_name': The full legal name of the business.\n"
-            "2. 'analysis': A detailed 3-paragraph strategy covering their business model and 3 specific AI automation targets.\n"
-            "3. 'score': A lead quality number (1 to 5).\n"
-            "4. 'pain_points': One clear, hard-hitting sentence about their biggest operational weakness.\n"
-            "Return ONLY the JSON. No conversational text."
+            f"AUDIT TARGET: {url}\n\nDATA SOURCE:\n{text}\n\n"
+            "INSTRUCTIONS:\n"
+            "Generate a strategic JSON report with these keys:\n"
+            "1. 'company_name': Full business name.\n"
+            "2. 'analysis': 3-paragraph audit of business model and 3 revenue-recovery AI targets.\n"
+            "3. 'score': Lead quality number (1-5).\n"
+            "4. 'pain_points': One-sentence operational bottleneck.\n"
+            "OUTPUT FORMAT: Strict JSON."
         )
         
-        # Force JSON output mode
         ai_response = model.generate_content(
             prompt, 
             generation_config={"response_mime_type": "application/json"}
@@ -66,7 +60,7 @@ def analyze_lead(url):
         return json.loads(ai_response.text)
         
     except Exception as e:
-        return {"error": f"Sentinel Engine Error: {str(e)}"}
+        return {"error": f"Sentinel Logic Break: {str(e)}"}
 
 @app.route('/webhook', methods=['POST'])
 def handle_lead():
@@ -74,33 +68,35 @@ def handle_lead():
     website = data.get("website")
     
     if not website:
-        return jsonify({"error": "No website URL provided"}), 400
+        return jsonify({"error": "Missing 'website' key"}), 400
 
-    # AI performs the deep audit
+    # Execute Analysis
     result = analyze_lead(website)
     
-    # Internal sync to Airtable
-    sync = send_to_airtable(website, result)
+    # Direct Admin-to-CRM Sync
+    sync_report = send_to_airtable(website, result)
     
-    return jsonify({"status": "Success", "data": result, "airtable_sync": sync}), 200
+    return jsonify({
+        "status": "Sentinel Active",
+        "data_extracted": result,
+        "airtable_sync": sync_report
+    }), 200
 
 def send_to_airtable(url, result):
     if "error" in result:
         return result["error"]
 
-    base_id = os.environ.get("BASE_ID")
-    table_name = os.environ.get("TABLE_NAME")
-    at_token = os.environ.get("AIRTABLE_TOKEN")
+    at_url = f"https://api.airtable.com/v0/{os.environ.get('BASE_ID')}/{os.environ.get('TABLE_NAME')}"
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('AIRTABLE_TOKEN')}",
+        "Content-Type": "application/json"
+    }
     
-    at_url = f"https://api.airtable.com/v0/{base_id}/{table_name}"
-    headers = {"Authorization": f"Bearer {at_token}", "Content-Type": "application/json"}
-    
-    # Mapped exactly to your 6 Airtable columns
     payload = {
         "fields": {
             "Website URL": url,
-            "Company Name": result.get("company_name", "N/A"),
-            "Sentinel Analysis": result.get("analysis", "Analysis failed"),
+            "Company Name": result.get("company_name", "Unknown"),
+            "Sentinel Analysis": result.get("analysis", "Check Logs"),
             "Lead Score": int(result.get("score", 0)),
             "Operational Pain Points": result.get("pain_points", "N/A"),
             "Status": "Processed"
@@ -108,9 +104,7 @@ def send_to_airtable(url, result):
     }
     
     r = requests.post(at_url, headers=headers, json=payload)
-    return "Synced Successfully" if r.status_code == 200 else f"Airtable Sync Failed: {r.text}"
+    return "Sync Success" if r.status_code == 200 else f"Airtable Denied: {r.text}"
 
 if __name__ == "__main__":
-    # Standard Render/Heroku port logic
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
