@@ -7,7 +7,7 @@ import json
 
 app = Flask(__name__)
 
-# --- CONFIGURATION ---
+# --- 1. ADMIN CONFIGURATION ---
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 model = genai.GenerativeModel(
     model_name='gemini-2.5-flash',
@@ -15,30 +15,40 @@ model = genai.GenerativeModel(
 )
 
 def check_duplicate(url):
-    """Gatekeeper: Checks Airtable for URL to avoid double-billing."""
-    at_url = f"https://api.airtable.com/v0/{os.environ.get('BASE_ID')}/{os.environ.get('TABLE_NAME')}?filterByFormula={{Website URL}}='{url}'"
-    headers = {"Authorization": f"Bearer {os.environ.get('AIRTABLE_TOKEN')}"}
+    """Checks Airtable for URL to avoid burning credits or creating double rows."""
+    base_id = os.environ.get("BASE_ID")
+    table_name = os.environ.get("TABLE_NAME")
+    at_token = os.environ.get("AIRTABLE_TOKEN")
+    
+    # Matches your former code's formula logic
+    formula = f"{{Website URL}}='{url}'"
+    at_url = f"https://api.airtable.com/v0/{base_id}/{table_name}?filterByFormula={formula}"
+    
+    headers = {"Authorization": f"Bearer {at_token}"}
     try:
         r = requests.get(at_url, headers=headers, timeout=10)
-        return len(r.json().get("records", [])) > 0
-    except: return False
+        records = r.json().get("records", [])
+        return len(records) > 0
+    except:
+        return False
 
 def analyze_lead(url):
-    """Scraper with browser-mimicry headers."""
+    """Standardizes URL and performs the AI Audit."""
     try:
-        # Standardize URL format
+        # Standardize URL format as per your former code
         if not url.startswith('http'):
             url = 'https://' + url
             
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=20)
+        response = requests.get(url, headers=headers, timeout=25)
         
         if response.status_code != 200:
             return {"error": f"HTTP {response.status_code}"}
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        for s in soup(["script", "style"]): s.decompose()
-        text = soup.get_text(separator=' ').strip()[:8000]
+        for s in soup(["script", "style", "nav", "footer"]): 
+            s.decompose()
+        text = soup.get_text(separator=' ').strip()[:10000]
 
         ai_response = model.generate_content(f"Analyze: {text}", generation_config={"response_mime_type": "application/json"})
         return json.loads(ai_response.text)
@@ -49,45 +59,49 @@ def analyze_lead(url):
 def handle_lead():
     data = request.json
     website = data.get("website")
-    if not website: return jsonify({"error": "No URL"}), 400
+    if not website: 
+        return jsonify({"error": "No URL"}), 400
 
-    # 1. Deduplication
+    # STEP 1: DEDUPLICATION
+    # We exit IMMEDIATELY if it exists. We do NOT call send_to_airtable here.
+    # This prevents the 'Ghost Row' issue.
     if check_duplicate(website):
-        sync = send_to_airtable(website, {"status_override": "Skipped"})
-        return jsonify({"status": "Skipped", "airtable": sync}), 200
+        return jsonify({"status": "Skipped", "reason": "URL already exists in Airtable"}), 200
 
-    # 2. Analysis
+    # STEP 2: ANALYSIS
+    # Scrape the site and get AI results before touching Airtable.
     result = analyze_lead(website)
     
-    # 3. Sync
+    # STEP 3: SINGLE SYNC
+    # We only create ONE record at the very end.
     sync = send_to_airtable(website, result)
     
     return jsonify({
-        "status": "Error" if "error" in result else "Processed",
+        "status": "Processed" if "error" not in result else "Error",
         "data": result,
         "airtable": sync
     }), 200
 
 def send_to_airtable(url, result):
-    """Only sends fields confirmed to exist in your Airtable."""
+    """Updates Airtable using your exact confirmed field names."""
     at_url = f"https://api.airtable.com/v0/{os.environ.get('BASE_ID')}/{os.environ.get('TABLE_NAME')}"
     headers = {"Authorization": f"Bearer {os.environ.get('AIRTABLE_TOKEN')}", "Content-Type": "application/json"}
     
     if "error" in result:
+        # Standardized Error status
         fields = {"Website URL": url, "Status": "Error"}
-    elif result.get("status_override") == "Skipped":
-        fields = {"Website URL": url, "Status": "Skipped"}
     else:
-        # These are the exact fields that worked for Apple
+        # EXACT fields from your successful Apple run
         fields = {
             "Website URL": url,
             "Company Name": result.get("company_name", "Unknown"),
-            "Sentinel Analysis": result.get("analysis", "Done"),
+            "Sentinel Analysis": result.get("analysis", "Complete"),
             "Lead Score": int(result.get("score", 0)),
             "Operational Pain Points": result.get("pain_points", "N/A"),
             "Status": "Processed"
         }
 
+    # Atomic POST request
     r = requests.post(at_url, headers=headers, json={"fields": fields, "typecast": True})
     return "Success" if r.status_code == 200 else f"Airtable Denied: {r.text}"
 
